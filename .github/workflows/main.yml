@@ -1,137 +1,113 @@
-name: Secure RDP via Tailscale (Automated Loop)
+name: RDP
 
 on:
   workflow_dispatch:
-    inputs:
-      gh_api_token:
-        description: "🔒 ToolboxLap | ENTER YOUR GITHUB PAT HERE (Starts with ghp_...)"
-        required: true
-        default: ""
-      loops:
-        description: "🔄 System Internal Counter (Leave Empty - Managed Automatically)"
-        required: false
-        default: ""
-
-concurrency:
-  group: rdp-loop-singleton
-  cancel-in-progress: false
-
-permissions:
-  contents: read
-  actions: write
-
-defaults:
-  run:
-    shell: pwsh
 
 jobs:
   secure-rdp:
-    runs-on: windows-2025
-    timeout-minutes: 360
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
     steps:
-      - name: 🔒 Executing Secured Core Engine
+      - name: Configure Core RDP Settings
         run: |
-          $token = "${{ github.event.inputs.gh_api_token }}"
-          if (-not $token -or -not ($token -match '^ghp_[a-zA-Z0-9]+$')) {
-              Write-Error "❌ Invalid Token!"
-              exit 1
-          }
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
 
-          # 📢 Protected Branding & Dynamic Injector
-          $u_enc = "VE9PTEJPWExBUA=="
-          $p_enc = "YWRtaW5AMTIz"
-          $w_enc = "aHR0cHM6Ly93d3cudG9vbGJveGxhcC5jb20="
-          # Updated with your secure handle link: https://www.youtube.com/@TOOLBOXLAP-u1c
-          $y_enc = "aHR0cHM6Ly93d3cueW91dHViZS5jb20vQFRPT0xCT1hMQVAtdTFj"
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
           
-          $u = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($u_enc))
-          $p = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($p_enc))
-          $w = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($w_enc))
-          $y = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($y_enc))
+          # For testing, allow any incoming connection on port 3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
 
-          # Anti-Tamper Hard Verification
-          if ($u -ne "TOOLBOXLAP" -or $w -notlike "*toolboxlap*") {
-              Write-Error "🔒 Security Violation: Unauthorized modification detected!"
-              exit 1
-          }
-
-          # Injecting Clickable Blue Links Into GitHub Summary
-          $summaryContent = @"
-          # 🚀 TOOLBOXLAP OFFICIAL RDP AUTOMATION
-          ### 🔒 Copyright & Ownership
-          * **Copyright © 2026 ToolboxLap.com**
-          * All rights reserved. Do not remove or modify copyright text.
-          ### 🔗 Official Channels & Support
-          * 🌐 **Official Website:** [$w]($w/)
-          * 📺 **YouTube Channel:** [Subscribe Here]($y)
-          ---
-          "@
-          $summaryContent | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-
-          # ⚙️ Core RDP Configuration
-          $f = "D:\" + $u + " link subscribe youtube channel"
-          if (-Not (Test-Path -Path $f)) { New-Item -Path $f -ItemType Directory | Out-Null }
-          
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389 | Out-Null
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force
 
-          $securePass = ConvertTo-SecureString $p -AsPlainText -Force
-          if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) {
-              New-LocalUser -Name $u -Password $securePass -AccountNeverExpires | Out-Null
+      - name: Create RDP User with Secure Password
+        run: |
+          Add-Type -AssemblyName System.Security
+          $charSet = @{
+              Upper   = [char[]](65..90)      # A-Z
+              Lower   = [char[]](97..122)     # a-z
+              Number  = [char[]](48..57)      # 0-9
+              Special = ([char[]](33..47) + [char[]](58..64) +
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
           }
-          Add-LocalGroupMember -Group "Administrators" -Member $u
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $u
+          $rawPassword = @()
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          
+          if (-not (Get-LocalUser -Name "RDP")) {
+              Write-Error "User creation failed"
+              exit 1
+          }
 
-          # 🌐 Silent Tailscale Engine Setup
+      - name: Install Tailscale
+        run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          Invoke-WebRequest -Uri $tsUrl -OutFile "$env:TEMP\ts.msi"
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$env:TEMP\ts.msi`"", "/quiet", "/norestart" -Wait
-          Remove-Item "$env:TEMP\ts.msi" -Force
-
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-toolboxlap-${{ github.run_number }} --accept-routes
+          $installerPath = "$env:TEMP\tailscale.msi"
           
-          $tsIP = $null; $r = 0
-          while (-not $tsIP -and $r -lt 10) {
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+
+      - name: Establish Tailscale Connection
+        run: |
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          
+          # Wait for Tailscale to assign an IP
+          $tsIP = $null
+          $retries = 0
+          while (-not $tsIP -and $retries -lt 10) {
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5; $r++
+              Start-Sleep -Seconds 5
+              $retries++
           }
-          if (-not $tsIP) { Write-Error "Network Fail"; exit 1 }
-
-          # 📢 Printing Credentials and Brand Links (Perfect Output Layout)
-          Write-Host "Address: $tsIP"
-          Write-Host "Username: $u"
-          Write-Host "Password: $p"
-          Write-Host "-----------------------------------------------------------------"
-          Write-Host "⚡ Powered by Toolbox Lab"
-          Write-Host "🌐 Official Website: $w"
-          Write-Host "📺 YouTube Channel: $y"
-          Write-Host "================================================================="
-
-          # ⏱️ Protected Runtime Production Loop (5 Hours 40 Minutes)
-          $m = 340
-          for ($i = 1; $i -le $m; $i++) {
-              $l = $m - $i
-              Write-Host "[$(Get-Date)] Running Tracker: $l min remaining."
-              Start-Sleep -Seconds 60
-          }
-
-          # 🔁 Secured Chain Rotation Engine
-          $inputLoops = "${{ github.event.inputs.loops }}"
-          $loops = if (-not $inputLoops) { 4 } else { [int]$inputLoops }
-          if ($loops -eq 1) { Write-Host "🎯 Chain Finished Successfully."; exit 0 }
           
-          $next = $loops - 1
-          $body = @{
-            ref    = "${{ github.ref_name }}"
-            inputs = @{ gh_api_token = "$token"; loops = "$next" }
-          } | ConvertTo-Json -Depth 5
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
+              exit 1
+          }
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+      
+      - name: Verify RDP Accessibility
+        run: |
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          
+          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $testResult.TcpTestSucceeded) {
+              Write-Error "TCP connection to RDP port 3389 failed"
+              exit 1
+          }
+          Write-Host "TCP connectivity successful!"
 
-          Invoke-RestMethod -Method POST `
-            -Uri "https://api.github.com/repos/${{ github.repository }}/actions/workflows/secure-rdp-loop.yml/dispatches" `
-            -Headers @{ Authorization = "Bearer $token"; "Accept"="application/vnd.github+json" } `
-            -Body $body
-          Write-Host "✅ Secured handoff executed to loop iteration: $next"
+      - name: Maintain Connection
+        run: |
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          Write-Host "==================`n"
+          
+          # Keep runner active indefinitely (or until manually cancelled)
+          while ($true) {
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+              Start-Sleep -Seconds 300
+          }
